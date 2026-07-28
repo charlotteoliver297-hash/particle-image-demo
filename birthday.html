@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 粒子生日快乐祝福</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: sans-serif;
+            cursor: pointer;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: #fff;
+            text-align: center;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px 25px;
+            border-radius: 20px;
+            backdrop-filter: blur(6px);
+            border: 1px solid rgba(255,255,255,0.1);
+            letter-spacing: 2px;
+            font-size: 16px;
+            text-shadow: 0 0 10px rgba(255,255,255,0.6);
+            transition: all 0.3s ease;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 18px;
+            z-index: 100;
+            background: rgba(0,0,0,0.85);
+            padding: 20px 40px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            text-align: center;
+        }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="loading">正在构建生日星空与三层蛋糕粒子...</div>
+    
+    <div id="ui-layer">👆 点击屏幕，开启生日惊喜 ✨</div>
+
+    <div id="canvas-container"></div>
+    <canvas id="pixel-canvas" style="display:none;"></canvas>
+
+    <script>
+        const PARTICLE_COUNT = 7500;
+        let scene, camera, renderer;
+        let mainParticles, mainGeometry, mainMaterial;
+        let starsGeometry, starsMaterial;
+
+        const positionsMap = {
+            nebula: new Float32Array(PARTICLE_COUNT * 3),
+            num3: new Float32Array(PARTICLE_COUNT * 3),
+            num2: new Float32Array(PARTICLE_COUNT * 3),
+            num1: new Float32Array(PARTICLE_COUNT * 3),
+            candle: new Float32Array(PARTICLE_COUNT * 3),
+            cake: new Float32Array(PARTICLE_COUNT * 3)
+        };
+
+        let currentTargetPositions = positionsMap.nebula;
+        let isStarted = false;
+        let isFinished = false;
+        let activeTimeouts = [];
+
+        async function init() {
+            initThree();
+            initStaticStars(); 
+            generateNebulaPositions();
+            
+            generateDigitPositions('3', positionsMap.num3);
+            generateDigitPositions('2', positionsMap.num2);
+            generateDigitPositions('1', positionsMap.num1);
+            generateCandlePositions();
+            generateCakePositions();
+
+            const positions = mainGeometry.attributes.position.array;
+            for(let i = 0; i < positions.length; i++) {
+                positions[i] = positionsMap.nebula[i];
+            }
+            mainGeometry.attributes.position.needsUpdate = true;
+
+            document.getElementById('loading').style.display = 'none';
+            animate();
+
+            window.addEventListener('click', handleScreenClick);
+        }
+
+        function handleScreenClick() {
+            if (!isStarted) {
+                isStarted = true;
+                startTimeline();
+            } else if (isFinished) {
+                resetTimeline();
+            }
+        }
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.001);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.z = window.innerWidth < 768 ? 600 : 500;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            mainGeometry = new THREE.BufferGeometry();
+            const initPositions = new Float32Array(PARTICLE_COUNT * 3);
+            mainGeometry.setAttribute('position', new THREE.BufferAttribute(initPositions, 3));
+
+            const colors = new Float32Array(PARTICLE_COUNT * 3);
+            const colorPink = new THREE.Color(0xff69b4); 
+            const colorGold = new THREE.Color(0xffd700);    
+            const colorBlue = new THREE.Color(0x00ffff);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const rand = Math.random();
+                const c = rand > 0.6 ? colorPink : (rand > 0.3 ? colorGold : colorBlue);
+                colors[i * 3]     = c.r;
+                colors[i * 3 + 1] = c.g;
+                colors[i * 3 + 2] = c.b;
+            }
+            mainGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const particleTexture = createGlowTexture();
+            mainMaterial = new THREE.PointsMaterial({
+                size: 6,
+                map: particleTexture,
+                vertexColors: true, 
+                transparent: true,
+                blending: THREE.AdditiveBlending, 
+                depthWrite: false
+            });
+
+            mainParticles = new THREE.Points(mainGeometry, mainMaterial);
+            scene.add(mainParticles);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createGlowTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.4, 'rgba(255,200,220,0.8)');
+            gradient.addColorStop(0.8, 'rgba(255,100,150,0.2)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function initStaticStars() {
+            const starCount = 1000;
+            starsGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(starCount * 3);
+            const opacities = new Float32Array(starCount); 
+
+            for(let i = 0; i < starCount * 3; i += 3) {
+                const phi = Math.random() * Math.PI * 2;
+                const theta = Math.random() * Math.PI;
+                const radius = Math.random() * 900 + 300;
+
+                positions[i] = radius * Math.sin(theta) * Math.cos(phi);
+                positions[i+1] = radius * Math.sin(theta) * Math.sin(phi);
+                positions[i+2] = radius * Math.cos(theta);
+                opacities[i/3] = Math.random();
+            }
+            starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            starsGeometry.setAttribute('opacity', new THREE.BufferAttribute(opacities, 1));
+
+            starsMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    color: { value: new THREE.Color(0xffffff) },
+                    pointSize: { value: 1.5 }
+                },
+                vertexShader: `
+                    attribute float opacity;
+                    varying float vOpacity;
+                    uniform float pointSize;
+                    void main() {
+                        vOpacity = opacity;
+                        vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+                        gl_PointSize = pointSize * ( 300.0 / -mvPosition.z );
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    varying float vOpacity;
+                    uniform vec3 color;
+                    void main() {
+                        if ( length( gl_PointCoord - vec2( 0.5 ) ) > 0.5 ) discard;
+                        gl_FragColor = vec4( color, vOpacity );
+                    }
+                `,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            scene.add(new THREE.Points(starsGeometry, starsMaterial));
+        }
+
+        function generateNebulaPositions() {
+            const pos = positionsMap.nebula;
+            for (let i = 0; i < PARTICLE_COUNT * 3; i += 3) {
+                const radius = Math.random() * 350;
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                pos[i]   = radius * Math.sin(phi) * Math.cos(theta);
+                pos[i+1] = radius * Math.sin(phi) * Math.sin(theta);
+                pos[i+2] = radius * Math.cos(phi) + (Math.random()-0.5)*100;
+            }
+        }
+
+        function generateDigitPositions(digit, targetArray) {
+            const canvas = document.getElementById('pixel-canvas');
+            canvas.width = 150;
+            canvas.height = 150;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, 150, 150);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 120px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(digit, 75, 75);
+
+            const imgData = ctx.getImageData(0, 0, 150, 150).data;
+            const validPoints = [];
+            for (let y = 0; y < 150; y++) {
+                for (let x = 0; x < 150; x++) {
+                    const idx = (y * 150 + x) * 4;
+                    if (imgData[idx + 3] > 128) {
+                        validPoints.push({
+                            x: (x - 75) * 3,
+                            y: -(y - 75) * 3,
+                            z: (Math.random() - 0.5) * 20
+                        });
+                    }
+                }
+            }
+
+            const len = validPoints.length;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const pt = validPoints[i % len] || {x:0, y:0, z:0};
+                targetArray[i * 3]     = pt.x + (Math.random() - 0.5) * 3;
+                targetArray[i * 3 + 1] = pt.y + (Math.random() - 0.5) * 3;
+                targetArray[i * 3 + 2] = pt.z + (Math.random() - 0.5) * 3;
+            }
+        }
+
+        function generateCandlePositions() {
+            const pos = positionsMap.candle;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let x, y, z;
+                if (i < PARTICLE_COUNT * 0.75) {
+                    const height = (Math.random() - 0.5) * 120;
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 12;
+                    x = Math.cos(theta) * r;
+                    y = height;
+                    z = Math.sin(theta) * r;
+                } else {
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = (1 - (i / PARTICLE_COUNT)) * 20;
+                    x = Math.cos(theta) * r;
+                    y = 70 + Math.random() * 35;
+                    z = Math.sin(theta) * r;
+                }
+                pos[i * 3]     = x;
+                pos[i * 3 + 1] = y;
+                pos[i * 3 + 2] = z;
+            }
+        }
+
+        function generateCakePositions() {
+            const pos = positionsMap.cake;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let x, y, z;
+                const ratio = i / PARTICLE_COUNT;
+                
+                if (ratio < 0.38) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 150;
+                    x = Math.cos(theta) * r;
+                    y = -90 + Math.random() * 55;
+                    z = Math.sin(theta) * r;
+                } else if (ratio < 0.68) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 105;
+                    x = Math.cos(theta) * r;
+                    y = -35 + Math.random() * 50;
+                    z = Math.sin(theta) * r;
+                } else if (ratio < 0.90) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 65;
+                    x = Math.cos(theta) * r;
+                    y = 15 + Math.random() * 45;
+                    z = Math.sin(theta) * r;
+                } else {
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 40;
+                    x = Math.cos(theta) * r;
+                    y = 60 + Math.random() * 25;
+                    z = Math.sin(theta) * r;
+                }
+                pos[i * 3]     = x;
+                pos[i * 3 + 1] = y;
+                pos[i * 3 + 2] = z;
+            }
+        }
+
+        function startTimeline() {
+            const tips = [
+                "✨ 正在为你点亮生日惊喜 ✨",
+                "⏱️ 倒计时：3",
+                "⏱️ 倒计时：2",
+                "⏱️ 倒计时：1",
+                "🕯️ 点亮生日蜡烛，许个愿吧~",
+                "🎂 Happy Birthday! 生日快乐！ 🎉 (点击屏幕可重新开始)"
+            ];
+
+            const stages = [
+                { pos: positionsMap.nebula, time: 0 },
+                { pos: positionsMap.num3, time: 2500 },
+                { pos: positionsMap.num2, time: 4500 },
+                { pos: positionsMap.num1, time: 6500 },
+                { pos: positionsMap.candle, time: 8500 },
+                { pos: positionsMap.cake, time: 11500 }
+            ];
+
+            stages.forEach((stage, index) => {
+                let tId = setTimeout(() => {
+                    currentTargetPositions = stage.pos;
+                    document.getElementById('ui-layer').innerText = tips[index];
+                    if (index === stages.length - 1) {
+                        isFinished = true;
+                    }
+                }, stage.time);
+                activeTimeouts.push(tId);
+            });
+        }
+
+        function resetTimeline() {
+            activeTimeouts.forEach(t => clearTimeout(t));
+            activeTimeouts = [];
+
+            isStarted = false;
+            isFinished = false;
+            currentTargetPositions = positionsMap.nebula;
+            document.getElementById('ui-layer').innerText = "👆 点击屏幕，开启生日惊喜 ✨";
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const positions = mainGeometry.attributes.position.array;
+            for (let i = 0; i < positions.length; i++) {
+                positions[i] += (currentTargetPositions[i] - positions[i]) * 0.06;
+            }
+            mainGeometry.attributes.position.needsUpdate = true;
+
+            mainParticles.rotation.y += 0.003;
+
+            const opacities = starsGeometry.attributes.opacity.array;
+            for (let i = 0; i < opacities.length; i++) {
+                opacities[i] += (Math.random() - 0.5) * 0.04;
+                if (opacities[i] > 1.0) opacities[i] = 1.0;
+                if (opacities[i] < 0.1) opacities[i] = 0.1;
+            }
+            starsGeometry.attributes.opacity.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
